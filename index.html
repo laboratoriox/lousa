@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Lousa mágica</title>
+  <meta name="description" content="Uma lousa em tela cheia. Desenhe com o dedo, a caneta ou o mouse e apague com um toque.">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#16202c">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2316202c'/%3E%3Cpath d='M14 40c8-18 14 8 22-8s10-4 14-10' fill='none' stroke='%23f2f5fa' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      --board: #16202c;
+      --chalk: #f2f5fa;
+      --ui: #e6ecf8;
+      --accent: #8c9bff;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body {
+      margin: 0; height: 100%; overflow: hidden;
+      overscroll-behavior: none;
+      background: var(--board);
+      font: 500 1rem/1 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      -webkit-user-select: none; user-select: none;
+      -webkit-touch-callout: none;
+    }
+    #lousa {
+      position: fixed; inset: 0;
+      width: 100%; height: 100%;
+      display: block;
+      touch-action: none;       /* o dedo desenha em vez de rolar a página */
+      cursor: crosshair;
+    }
+    .dica {
+      position: fixed; inset: 0;
+      display: grid; place-items: center;
+      padding: 2rem; text-align: center;
+      color: var(--ui); opacity: .5;
+      font-size: clamp(1.1rem, 3.2vw, 1.6rem);
+      pointer-events: none;
+      transition: opacity .5s ease;
+    }
+    .dica.some { opacity: 0; }
+    #apagar {
+      position: fixed;
+      right: max(1rem, env(safe-area-inset-right));
+      bottom: max(1rem, env(safe-area-inset-bottom));
+      display: inline-flex; align-items: center; gap: .6rem;
+      min-height: 3rem; padding: 0 1.25rem;
+      color: var(--ui);
+      background: rgba(22, 32, 44, .82);
+      border: 1px solid rgba(230, 236, 248, .35);
+      border-radius: 999px;
+      font: inherit; cursor: pointer;
+      -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+      transition: background-color .15s ease, border-color .15s ease, transform .1s ease;
+    }
+    #apagar:hover { border-color: var(--accent); background: rgba(140, 155, 255, .16); }
+    #apagar:active { transform: scale(.96); }
+    #apagar:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    #apagar svg { flex: none; }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+  </style>
+</head>
+<body>
+  <canvas id="lousa" aria-label="Lousa para desenhar"></canvas>
+  <div class="dica" id="dica" aria-hidden="true">Desenhe aqui</div>
+
+  <button id="apagar" type="button">
+    <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 14.5 11.5 6a1.5 1.5 0 0 1 2.1 0l2.4 2.4a1.5 1.5 0 0 1 0 2.1L10.5 16H6.2L3 14.5zM10.5 16H17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Apagar
+  </button>
+
+<script>
+(() => {
+  const canvas = document.getElementById('lousa');
+  const ctx = canvas.getContext('2d');
+  const dica = document.getElementById('dica');
+  const btn = document.getElementById('apagar');
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const CHALK = '#f2f5fa';
+
+  let w = 0, h = 0, dpr = 1;
+  let erasing = false;
+  let penSeen = false;                    // com caneta em uso, o resto da mão (toque) é ignorado
+  const strokes = new Map();              // um traço por ponteiro (vários dedos)
+
+  function setup() {
+    const nw = window.innerWidth, nh = window.innerHeight;
+    const ndpr = Math.min(window.devicePixelRatio || 1, 3);
+    if (nw === w && nh === h && ndpr === dpr) return;
+    // guarda o desenho antes de redimensionar (girar o celular não apaga nada)
+    let keep = null;
+    if (canvas.width && canvas.height) {
+      keep = document.createElement('canvas');
+      keep.width = canvas.width; keep.height = canvas.height;
+      keep.getContext('2d').drawImage(canvas, 0, 0);
+    }
+    const oldDpr = dpr;
+    w = nw; h = nh; dpr = ndpr;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = CHALK; ctx.fillStyle = CHALK;
+    if (keep) ctx.drawImage(keep, 0, 0, keep.width / oldDpr, keep.height / oldDpr);
+  }
+
+  function widthFor(e) {
+    if (e.pointerType === 'pen' && e.pressure > 0) return 1.5 + e.pressure * 7;
+    return e.pointerType === 'touch' ? 5 : 4;
+  }
+
+  function down(e) {
+    if (erasing) return;
+    if (e.pointerType === 'pen') penSeen = true;
+    if (e.pointerType === 'touch' && penSeen) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    canvas.setPointerCapture(e.pointerId);
+    const lw = widthFor(e);
+    strokes.set(e.pointerId, { x: e.offsetX, y: e.offsetY, mx: e.offsetX, my: e.offsetY });
+    ctx.beginPath(); ctx.arc(e.offsetX, e.offsetY, lw / 2, 0, Math.PI * 2); ctx.fill();   // um toque vira ponto
+    dica.classList.add('some');
+  }
+
+  function move(e) {
+    const s = strokes.get(e.pointerId);
+    if (!s || erasing) return;
+    const list = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    for (const p of (list.length ? list : [e])) {
+      const rect = canvas.getBoundingClientRect();
+      const x = p.clientX - rect.left, y = p.clientY - rect.top;
+      const mx = (s.x + x) / 2, my = (s.y + y) / 2;       // suaviza com curvas entre pontos médios
+      ctx.lineWidth = widthFor(p);
+      ctx.beginPath();
+      ctx.moveTo(s.mx, s.my);
+      ctx.quadraticCurveTo(s.x, s.y, mx, my);
+      ctx.stroke();
+      s.x = x; s.y = y; s.mx = mx; s.my = my;
+    }
+  }
+
+  function up(e) {
+    const s = strokes.get(e.pointerId);
+    if (!s) return;
+    ctx.lineWidth = widthFor(e);
+    ctx.beginPath(); ctx.moveTo(s.mx, s.my); ctx.lineTo(s.x, s.y); ctx.stroke();
+    strokes.delete(e.pointerId);
+  }
+
+  canvas.addEventListener('pointerdown', down);
+  canvas.addEventListener('pointermove', move);
+  canvas.addEventListener('pointerup', up);
+  canvas.addEventListener('pointercancel', up);
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  document.addEventListener('gesturestart', (e) => e.preventDefault());   // sem zoom por pinça no iOS
+
+  // apagar: uma barra varre a lousa da esquerda para a direita
+  function apagar() {
+    if (erasing) return;
+    strokes.clear();
+    if (reduce) { ctx.clearRect(0, 0, w, h); dica.classList.remove('some'); return; }
+    erasing = true;
+    const t0 = performance.now(), dur = 450, edge = Math.min(120, w * 0.2);
+    (function frame(now) {
+      const t = Math.min(1, (now - t0) / dur);
+      const x = t * (w + edge);
+      ctx.clearRect(0, 0, x - edge / 2, h);
+      // borda suave: apaga em degradê perto da frente da varredura
+      const g = ctx.createLinearGradient(x - edge, 0, x, 0);
+      g.addColorStop(0, 'rgba(0,0,0,1)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.save(); ctx.globalCompositeOperation = 'destination-out'; ctx.fillStyle = g;
+      ctx.fillRect(x - edge, 0, edge, h); ctx.restore();
+      if (t < 1) requestAnimationFrame(frame);
+      else { ctx.clearRect(0, 0, w, h); erasing = false; dica.classList.remove('some'); }
+    })(t0);
+  }
+  btn.addEventListener('click', apagar);
+
+  addEventListener('resize', setup);
+  addEventListener('orientationchange', () => setTimeout(setup, 200));
+  setup();
+})();
+</script>
+</body>
+</html>
